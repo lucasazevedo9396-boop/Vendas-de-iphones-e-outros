@@ -1,25 +1,49 @@
-"""Pulso iPhone: servidor local com SQLite e autenticação, sem dependências externas."""
+"""Pulso iPhone: servidor com autenticação e persistência SQLite ou PostgreSQL."""
 import hashlib, hmac, http.cookies, json, os, secrets, sqlite3, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DB = Path(os.environ.get('PULSO_DB', str(ROOT / '.data/pulso.sqlite3')))
-DB.parent.mkdir(parents=True, exist_ok=True)
-os.chmod(DB.parent, 0o700)
+from contextlib import contextmanager
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
 EMPTY = dict(stock=[], sales=[], clients=[], expenses=[])
 
+class PostgresConnection:
+    def __init__(self, db): self.db = db
+    def execute(self, query, params=()):
+        return self.db.execute(query.replace('?', '%s'), params)
+    def commit(self): self.db.commit()
+
+@contextmanager
 def connect():
-    db = sqlite3.connect(DB, timeout=10)
-    db.execute('PRAGMA foreign_keys=ON')
-    return db
+    if DATABASE_URL:
+        import psycopg
+        # Verifica certificado e hostname; não permite conexão remota sem TLS.
+        db = psycopg.connect(DATABASE_URL, connect_timeout=15,
+            sslmode='verify-full', sslrootcert=os.environ.get('PULSO_DATABASE_CA', '/etc/ssl/certs/ca-certificates.crt'))
+        with db: yield PostgresConnection(db)
+    else:
+        if os.environ.get('RENDER') == 'true':
+            raise RuntimeError('Configure DATABASE_URL: SQLite local não é persistente no Render gratuito.')
+        db = sqlite3.connect(DB, timeout=10)
+        try:
+            db.execute('PRAGMA foreign_keys=ON')
+            with db: yield db
+        finally: db.close()
+
+if not DATABASE_URL:
+    DB = Path(os.environ.get('PULSO_DB', str(ROOT / '.data/pulso.sqlite3')))
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(DB.parent, 0o700)
 
 with connect() as db:
-    db.executescript('''CREATE TABLE IF NOT EXISTS account (id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL, salt TEXT NOT NULL, password TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, csrf TEXT NOT NULL, expires REAL NOT NULL);
-    CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0);''')
-    db.execute('INSERT OR IGNORE INTO state VALUES (1, ?, 0)', (json.dumps(EMPTY),))
-os.chmod(DB, 0o600)
+    for query in [
+        'CREATE TABLE IF NOT EXISTS account (id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL, salt TEXT NOT NULL, password TEXT NOT NULL)',
+        'CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, csrf TEXT NOT NULL, expires DOUBLE PRECISION NOT NULL)',
+        'CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0)',
+    ]: db.execute(query)
+    db.execute('INSERT INTO state (id,value,revision) VALUES (1,?,0) ON CONFLICT (id) DO NOTHING', (json.dumps(EMPTY),))
+if not DATABASE_URL: os.chmod(DB, 0o600)
 
 def password_hash(password, salt):
     return hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
@@ -85,10 +109,11 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError,http.cookies.CookieError): return None
     def do_GET(self):
         path=self.path.split('?')[0]
+        if path=='/health': return self.send(200,{'ok':True})
         with connect() as db:
             session=self.session(db)
             if path=='/api/session':
-                return self.send(200,dict(authenticated=bool(session),setup=not bool(db.execute('SELECT id FROM account').fetchone()),csrf=session[1] if session else None))
+                return self.send(200,dict(authenticated=bool(session),setup=not bool(db.execute('SELECT id FROM account').fetchone()),csrf=session[1] if session else None,setupTokenRequired=bool(os.environ.get('PULSO_SETUP_TOKEN'))))
             if path=='/api/state':
                 if not session: return self.send(401,{'error':'Entre na sua conta.'})
                 value,revision=db.execute('SELECT value,revision FROM state WHERE id=1').fetchone()
@@ -112,8 +137,10 @@ class Handler(BaseHTTPRequestHandler):
                     if len(attempts)>=10: return self.send(429,{'error':'Muitas tentativas. Aguarde 5 minutos.'})
                     username=body.get('username','').strip(); password=body.get('password','')
                     if self.path=='/api/setup':
+                        expected=os.environ.get('PULSO_SETUP_TOKEN','')
+                        if expected and not hmac.compare_digest(body.get('setupToken',''),expected): return self.send(403,{'error':'Código de ativação incorreto.'})
                         if len(password)<10 or len(username)<3: raise ValueError('Use nome com 3 caracteres e senha com pelo menos 10 caracteres.')
-                        db.execute('BEGIN IMMEDIATE')
+                        db.execute('SELECT id FROM state WHERE id=1 FOR UPDATE') if DATABASE_URL else db.execute('BEGIN IMMEDIATE')
                         if db.execute('SELECT id FROM account').fetchone(): return self.send(409,{'error':'Conta já configurada.'})
                         salt=secrets.token_hex(16)
                         db.execute('INSERT INTO account VALUES (1,?,?,?)',(username,salt,password_hash(password,salt)))

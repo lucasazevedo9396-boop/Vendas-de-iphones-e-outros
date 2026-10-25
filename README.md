@@ -1,6 +1,6 @@
 # Pulso iPhone
 
-Gestão de estoque, vendas, clientes e financeiro em português. Interface baseada no HTML original fornecido pelo usuário, com servidor Python e SQLite. Não exige pacotes externos.
+Gestão de estoque, vendas, clientes e financeiro em português. Interface baseada no HTML original fornecido pelo usuário, com servidor Python, SQLite local e PostgreSQL externo opcional. O modo PostgreSQL instala as dependências de requirements.txt.
 
 ## Iniciar
 
@@ -38,3 +38,24 @@ python3 -m unittest discover -s tests -v
 ```
 
 A suíte usa banco e servidor temporários e verifica login, bloqueio sem sessão, CSRF, validação, conflitos entre revisões e persistência após novo login. O fluxo completo de cadastro, venda, despesas, backup e recebimento parcial também foi exercitado em Chromium durante a implementação.
+
+## Render gratuito + PostgreSQL externo (Neon)
+
+Nesta modalidade, conta, senha protegida por hash, sessões e registros são guardados no PostgreSQL externo. O disco efêmero do Render não é usado para esses dados. SQLite continua disponível para desenvolvimento local. O aplicativo recusa iniciar no Render sem `DATABASE_URL`, evitando perda silenciosa de registros. As tabelas são criadas automaticamente, sem substituir dados existentes.
+
+1. Crie um projeto no plano **Free** do Neon e obtenha a connection string PostgreSQL no botão **Connect**. Prefira a conexão com pooling. Não envie esse endereço por chat ou commit: ele contém a senha do banco.
+2. No Render, selecione Python 3, branch `main`, instância **Free**, sem disco pago.
+3. Build Command: `pip install -r requirements.txt && python -m unittest discover -s tests -v`
+4. Start Command: `PULSO_HOST=0.0.0.0 python server.py`
+5. Configure as variáveis no Render:
+   - `DATABASE_URL`: connection string fornecida pelo Neon, mantida apenas no servidor.
+   - `PULSO_SECURE_COOKIE`: `1`.
+   - `PULSO_SETUP_TOKEN`: código longo e aleatório escolhido por você, necessário apenas para criar a primeira conta. Guarde-o com segurança e informe-o na tela de primeiro acesso.
+6. Se houver campo de health check, use `/health`.
+7. Publique e crie seu usuário e senha. Exporte backup JSON regularmente. Para migrar registros locais, exporte no sistema antigo e importe no novo; a conta deverá ser criada no banco novo.
+
+As conexões PostgreSQL verificam certificado e hostname com TLS (`verify-full`). Não desative essa verificação. Não cadastre a URL do banco como segredo de proxy HTTP: a conexão PostgreSQL é TCP. `PULSO_DATABASE_CA` é um caminho opcional para CA própria, usado apenas em testes locais; no Render o padrão é o pacote de CAs do sistema.
+
+Os planos gratuitos têm limites, podem suspender serviços por inatividade e podem mudar. O primeiro acesso após inatividade pode demorar. Confira os termos atuais no cadastro do Neon e Render; não habilite plano pago para seguir este procedimento. Essa opção não promete disponibilidade contínua nem capacidade ilimitada.
+
+Os testes padrão nunca usam o `DATABASE_URL` de produção. Para integração, aponte **somente para um banco de teste vazio**, pois criará uma conta e dados: `PULSO_TEST_DATABASE_URL=... python -m unittest discover -s tests -v`. A integração foi executada com PostgreSQL 17 real e TLS, incluindo reinício do processo e preservação de sessão, conta e venda parcial.
