@@ -7,7 +7,8 @@ class API(unittest.TestCase):
   with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
   cls.base=f'http://127.0.0.1:{port}'
   cls.server_env={k:v for k,v in os.environ.items() if k not in ['DATABASE_URL','RENDER','PULSO_SETUP_TOKEN']}
-  cls.server_env.update(PORT=str(port),PULSO_DB=cls.tmp.name+'/db.sqlite3',PULSO_SETUP_TOKEN='activation-test-only')
+  # O servidor temporário usa HTTP local; cookies Secure continuam ativos em produção.
+  cls.server_env.update(PORT=str(port),PULSO_DB=cls.tmp.name+'/db.sqlite3',PULSO_SETUP_TOKEN='activation-test-only',PULSO_SECURE_COOKIE='0')
   if os.environ.get('PULSO_TEST_DATABASE_URL'): cls.server_env['DATABASE_URL']=os.environ['PULSO_TEST_DATABASE_URL']
   cls.proc=subprocess.Popen([sys.executable,'server.py'],env=cls.server_env,stdout=subprocess.DEVNULL)
   cls.client=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
