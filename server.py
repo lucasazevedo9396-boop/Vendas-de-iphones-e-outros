@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent
 from contextlib import contextmanager
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 EMPTY = dict(stock=[], sales=[], clients=[], expenses=[])
+RATES = json.loads((ROOT / 'rates.json').read_text())
 
 class PostgresConnection:
     def __init__(self, db): self.db = db
@@ -79,6 +80,28 @@ def validate(data):
         if sid not in stocks or sale.get('clientId') not in clients or sid in sold: raise ValueError('Venda duplicada ou referência inválida.')
         sold.add(sid)
         if stocks[sid]['status']!='Vendido': raise ValueError('Aparelho vendido deve ter status Vendido.')
+        mode=sale.get('feeMode','manual')
+        if mode not in ['manual','automatic']: raise ValueError('Cálculo da taxa inválido.')
+        if 'installments' in sale:
+            parts=sale['installments']
+            if isinstance(parts,bool) or not isinstance(parts,int) or not 1 <= parts <= 12: raise ValueError('Parcelamento deve ser de 1 a 12 vezes.')
+        if mode=='automatic':
+            from decimal import Decimal, ROUND_HALF_UP
+            payment=sale.get('payment')
+            if payment in ['Cartão de débito','Cartão de crédito','Link de pagamento']:
+                brand='Link de pagamento' if payment=='Link de pagamento' else sale.get('cardBrand')
+                if brand not in RATES: raise ValueError('Bandeira inválida.')
+                parts=sale.get('installments',1)
+                if payment=='Cartão de débito' and (parts!=1 or brand=='Link de pagamento'): raise ValueError('Débito não pode ser parcelado.')
+                if payment=='Cartão de crédito' and brand=='Link de pagamento': raise ValueError('Selecione uma bandeira de cartão.')
+                rate=RATES[brand]['debit'] if payment=='Cartão de débito' else RATES[brand]['credit'][parts-1]
+                if rate is None: raise ValueError('Taxa de débito não informada para esta bandeira.')
+                amount=sale.get('cardAmount',sale['price'])
+                if isinstance(amount,bool) or not isinstance(amount,(int,float)) or not math.isfinite(amount) or not 0 <= amount <= sale['price']: raise ValueError('Valor no cartão inválido.')
+            else: rate,amount=0,0
+            expected=(Decimal(str(amount))*Decimal(str(rate))/100).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
+            if Decimal(str(sale['fee']))!=expected: raise ValueError('A taxa não corresponde à tabela. Reabra a venda e confira os valores.')
+            sale['feeRate']=rate
         received=sale.get('received',sale['price'])
         if not isinstance(received,(float,int)) or not 0 <= received <= sale['price']: raise ValueError('Valor recebido inválido.')
     from datetime import date
@@ -114,6 +137,9 @@ class Handler(BaseHTTPRequestHandler):
             session=self.session(db)
             if path=='/api/session':
                 return self.send(200,dict(authenticated=bool(session),setup=not bool(db.execute('SELECT id FROM account').fetchone()),csrf=session[1] if session else None,setupTokenRequired=bool(os.environ.get('PULSO_SETUP_TOKEN'))))
+            if path=='/api/rates':
+                if not session: return self.send(401,{'error':'Entre na sua conta.'})
+                return self.send(200,RATES)
             if path=='/api/state':
                 if not session: return self.send(401,{'error':'Entre na sua conta.'})
                 value,revision=db.execute('SELECT value,revision FROM state WHERE id=1').fetchone()

@@ -25,7 +25,7 @@ A aplicação deve ser aberta pelo servidor; abrir o HTML diretamente não funci
 - Despesas e backup JSON com validação no servidor.
 - Controle de revisão para impedir sobrescrita silenciosa por outra aba.
 
-O lucro estimado é venda menos custo, taxa e despesas; não é fluxo de caixa e não inclui tributos não registrados. O gráfico mostra sempre os últimos sete dias, respeitando os filtros. Não há agenda de parcelas com vencimentos, recuperação de senha por e-mail, múltiplos usuários, edição/cancelamento de vendas ou integração WhatsApp.
+O lucro estimado é venda menos custo, taxa e despesas; não é fluxo de caixa e não inclui tributos não registrados. O gráfico mostra sempre os últimos sete dias, respeitando os filtros. Não há agenda de parcelas com vencimentos, recuperação de senha por e-mail, múltiplos usuários, cancelamento de vendas ou integração WhatsApp.
 
 ## Dados e backups
 
@@ -59,3 +59,14 @@ As conexões PostgreSQL verificam certificado e hostname com TLS (`verify-full`)
 Os planos gratuitos têm limites, podem suspender serviços por inatividade e podem mudar. O primeiro acesso após inatividade pode demorar. Confira os termos atuais no cadastro do Neon e Render; não habilite plano pago para seguir este procedimento. Essa opção não promete disponibilidade contínua nem capacidade ilimitada.
 
 Os testes padrão nunca usam o `DATABASE_URL` de produção. Para integração, aponte **somente para um banco de teste vazio**, pois criará uma conta e dados: `PULSO_TEST_DATABASE_URL=... python -m unittest discover -s tests -v`. A integração foi executada com PostgreSQL 17 real e TLS, incluindo reinício do processo e preservação de sessão, conta e venda parcial.
+
+
+## Edição de registros e taxas
+
+Use **Editar** nas listas de Estoque, Vendas, Clientes e despesas do Financeiro. Os formulários abrem com os valores atuais e permitem cancelar sem salvar. Alterar nome de cliente atualiza as vendas vinculadas. Corrigir modelo/custo de aparelho vendido atualiza sua venda e o lucro; o status permanece Vendido. Ao corrigir o aparelho de uma venda, o anterior volta a Disponível e o novo fica Vendido. Não há exclusão de registros nesta atualização.
+
+Na venda, escolha Pix, dinheiro, débito, crédito ou link. O modo **Automático pela tabela** calcula o desconto sobre o valor cobrado no cartão; o campo **Valor no cartão** permite separar uma entrada por Pix. Em crédito/link, selecione 1 a 12 parcelas. A prévia mostra taxa, líquido e lucro. A taxa não é repassada automaticamente ao comprador. As parcelas são informativas, sem agenda automática de vencimentos. Os recebimentos continuam em valor bruto.
+
+A tabela em `rates.json` foi transcrita da imagem fornecida pelo usuário (26/10/2026); não consulta a operadora. Visa/Mastercard têm débito 1,37%; Elo 2,58%. Débito Amex/Hipercard não foi informado: o modo automático bloqueia esse caso. Link só tem crédito. A tabela completa está no formulário de venda e no Financeiro. Para condições diferentes, escolha **Manual em reais**. O servidor valida as taxas automáticas; vendas antigas sem metadados continuam como manuais, preservando a taxa existente. Faça backup antes de corrigir registros em lote.
+
+Validação: suíte HTTP cobre todas as bandeiras e as 12 parcelas, débitos, taxa adulterada, parcelas inválidas, backups antigos e persistência das correções. Chromium foi usado para testar edição dos quatro cadastros, custo/modelo vinculados, taxa manual, valor parcial no cartão e formulário em tela de celular. Nenhum teste usa o banco de produção.
